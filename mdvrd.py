@@ -63,13 +63,15 @@ async def http_ipc_handle(request):
     debugpp(request_data)
     try:
         queue_rt_proto.put_nowait(msg)
-        debug("received route protcol message from {}:{}\n".format(addr[0], addr[1]))
+        fmt = "received route protcol message from {}:{}\n"
+        debug(fmt.format( addr[0], addr[1]))
     except asyncio.queues.QueueFull:
         warn("queue overflow, strange things happens")
 
     response_data = {'status': 'ok'}
     body = json.dumps(response_data).encode('utf-8')
-    return aiohttp.web.Response(body=body, content_type="application/json")
+    return aiohttp.web.Response(body=body,
+                                content_type="application/json")
 
 
 def http_ipc_init(db, loop, queue_rt_proto):
@@ -77,9 +79,11 @@ def http_ipc_init(db, loop, queue_rt_proto):
     app['queue_rt_proto'] = queue_rt_proto
     app['db'] = db
     app.router.add_route('POST', conf.ipc.path, http_ipc_handle)
-
-    server = loop.create_server(app.make_handler(), conf.ipc.v4_listen_addr, conf.ipc.v4_listen_port)
-    msg("HTTP IPC server started at http://{}:{}\n".format(conf.ipc.v4_listen_addr, conf.ipc.v4_listen_port))
+    server = loop.create_server(app.make_handler(),
+                                conf.ipc.v4_listen_addr,
+                                conf.ipc.v4_listen_port)
+    fmt = "HTTP IPC server started at http://{}:{}\n"
+    msg(fmt.format(conf.ipc.v4_listen_addr, conf.ipc.v4_listen_port))
     loop.run_until_complete(server)
 
 
@@ -88,16 +92,15 @@ def rx_mcast_socket_init(conf):
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     if hasattr(sock, "SO_REUSEPORT"):
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-
     sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, MCAST_LOOP)
-
     sock.bind(('', int(conf.common.v4_listen_port)))
-    host = socket.gethostbyname(socket.gethostname())
-    sock.setsockopt(socket.SOL_IP, socket.IP_MULTICAST_IF, socket.inet_aton(host))
-
-    mreq = struct.pack("4sl", socket.inet_aton(conf.common.v4_mcast_addr), socket.INADDR_ANY)
+    host = socket.inet_aton(socket.gethostbyname(socket.gethostname()))
+    sock.setsockopt(socket.SOL_IP, socket.IP_MULTICAST_IF, host)
+    mcast_addr = socket.inet_aton(conf.common.v4_mcast_addr)
+    mreq = struct.pack("4sl", mcast_addr, socket.INADDR_ANY)
     sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
-    msg("Routing protocol mcast socket listen on {}:{}\n".format(conf.common.v4_mcast_addr, conf.common.v4_listen_port))
+    fmt = "Routing protocol mcast socket listen on {}:{}\n"
+    msg(fmt.format(conf.common.v4_mcast_addr, conf.common.v4_listen_port))
     return sock
 
 
@@ -117,23 +120,31 @@ def rx_mcast_socket_cb(fd, queue_rt_proto):
     msg.data = d
     try:
         queue_rt_proto.put_nowait(msg)
-        debug("received route protcol message from {}:{}\n".format(addr[0], addr[1]))
+        fmt = "received route protcol message from {}:{}\n"
+        debug(fmt.format(addr[0], addr[1]))
     except asyncio.queues.QueueFull:
         warn("queue overflow, strange things happens")
 
+
 def tx_socket_create(conf, out_addr):
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+    ttl = int(conf.common.mcast_tx_ttl)
+    addr = socket.inet_aton(out_addr)
+    sock = socket.socket(socket.AF_INET,
+                         socket.SOCK_DGRAM,
+                         socket.IPPROTO_UDP)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, int(conf.common.mcast_tx_ttl))
-    sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(out_addr))
+    sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, ttl)
+    sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, addr)
     return sock
 
 
 def init_rx_tx_sockets(conf, db, loop, queue_rt_proto):
     fd = rx_mcast_socket_init(conf)
-    loop.add_reader(fd, functools.partial(rx_mcast_socket_cb, fd, queue_rt_proto))
+    partial_args = functools.partial(rx_mcast_socket_cb, fd, queue_rt_proto)
+    loop.add_reader(fd, partial_args)
     for interface in conf.interfaces:
-        interface.local_v4_out_fd = tx_socket_create(conf, interface.local_v4_out_addr)
+        addr = interface.local_v4_out_addr
+        interface.local_v4_out_fd = tx_socket_create(conf, addr)
         db.interfaces.append(interface)
 
 
