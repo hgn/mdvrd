@@ -70,17 +70,17 @@ def load_configuration_file(args):
     with open(args.configuration) as json_data:
         return addict.Dict(json.load(json_data))
 
-def init_global_behave(conf):
+def init_global_behavior(conf):
     if conf.common.debug == "verbose":
         DEBUG_ON = True
 
 def conf_init():
     args = parse_args()
     conf = load_configuration_file(args)
-    init_global_behave(conf)
     return conf
 
 
 if __name__ == '__main__':
     conf = conf_init()
+    init_global_behavior(conf)
     main(conf)
