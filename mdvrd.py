@@ -72,9 +72,10 @@ async def http_ipc_handle(request):
     return aiohttp.web.Response(body=body, content_type="application/json")
 
 
-def http_ipc_init(loop, queue_rt_proto):
+def http_ipc_init(db, loop, queue_rt_proto):
     app = aiohttp.web.Application(loop=loop)
     app['queue_rt_proto'] = queue_rt_proto
+    app['db'] = db
     app.router.add_route('POST', conf.ipc.path, http_ipc_handle)
 
     server = loop.create_server(app.make_handler(), conf.ipc.v4_listen_addr, conf.ipc.v4_listen_port)
@@ -120,10 +121,20 @@ def rx_mcast_socket_cb(fd, queue_rt_proto):
     except asyncio.queues.QueueFull:
         warn("queue overflow, strange things happens")
 
+def tx_socket_create(conf, out_addr):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, int(conf.common.mcast_tx_ttl))
+    sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(out_addr))
+    return sock
 
-def init_rx_tx_sockets(conf, loop, queue_rt_proto):
+
+def init_rx_tx_sockets(conf, db, loop, queue_rt_proto):
     fd = rx_mcast_socket_init(conf)
     loop.add_reader(fd, functools.partial(rx_mcast_socket_cb, fd, queue_rt_proto))
+    for interface in conf.interfaces:
+        interface.local_v4_out_fd = tx_socket_create(conf, interface.local_v4_out_addr)
+        db.interfaces.append(interface)
 
 
 def rtn_rx_msg_multiplex(data):
@@ -135,18 +146,26 @@ def rtn_rx_msg_multiplex(data):
         raise Exception("Internal error")
 
 
-async def rtn_msg_handler(conf, queue_rt_proto):
+async def rtn_msg_handler(conf, db, queue_rt_proto):
     while True:
         entry = await queue_rt_proto.get()
         rtn_rx_msg_multiplex(entry)
 
 
+def db_init():
+    db = addict.Dict()
+    db.interfaces = []
+    db.rtn_table = []
+    return db
+
+
 def main(conf):
+    db = db_init()
     loop = asyncio.get_event_loop()
     queue_rt_proto = asyncio.Queue(ASYNC_IO_QUEUE_LENGTH)
-    http_ipc_init(loop, queue_rt_proto)
-    init_rx_tx_sockets(conf, loop, queue_rt_proto)
-    asyncio.ensure_future(rtn_msg_handler(conf, queue_rt_proto))
+    http_ipc_init(db, loop, queue_rt_proto)
+    init_rx_tx_sockets(conf, db, loop, queue_rt_proto)
+    asyncio.ensure_future(rtn_msg_handler(conf, db, queue_rt_proto))
 
     try:
         loop.run_forever()
