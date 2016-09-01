@@ -35,7 +35,7 @@ def msg(msg):
     sys.stdout.write(msg)
 
 
-async def handle(request):
+async def http_ipc_handle(request):
     data = addict.Dict(await request.json())
     debugpp(data)
     response_data = {'status': 'ok'}
@@ -43,14 +43,18 @@ async def handle(request):
     return aiohttp.web.Response(body=body, content_type="application/json")
 
 
-def main(conf):
-    loop = asyncio.get_event_loop()
+def http_ipc_init(loop):
     app = aiohttp.web.Application(loop=loop)
-    app.router.add_route('POST', conf.ipc.path, handle)
+    app.router.add_route('POST', conf.ipc.path, http_ipc_handle)
 
     server = loop.create_server(app.make_handler(), conf.ipc.v4_listen_addr, conf.ipc.v4_listen_port)
     msg("Server started at http://{}:{}\n".format(conf.ipc.v4_listen_addr, conf.ipc.v4_listen_port))
     loop.run_until_complete(server)
+
+
+def main(conf):
+    loop = asyncio.get_event_loop()
+    init_http_ipc_init(loop)
     try:
        loop.run_forever()
     except KeyboardInterrupt:
