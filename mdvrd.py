@@ -193,7 +193,7 @@ def rtn_rx_parse_payload_data(raw):
         return False, None
     data = raw[len(IDENT) + 4:len(IDENT) + 4 + size]
     uncompressed_json = str(zlib.decompress(data), "utf-8")
-    data = json.loads(uncompressed_json)
+    data = addict.Dict(json.loads(uncompressed_json))
     return True, data
 
 
@@ -237,6 +237,7 @@ def rtn_tx_packet_create_body(conf):
     json_data = json.dumps(data)
     byte_stream = str.encode(json_data)
     compressed = zlib.compress(byte_stream, ZIP_COMPRESSION_LEVEL)
+    crc32 = zlib.crc32(compressed) & 0xffffffff
     return compressed
 
 
