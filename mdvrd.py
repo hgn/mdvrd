@@ -18,6 +18,13 @@ import functools
 # default false, can be changed via program arguments (-v)
 DEBUG_ON = False
 
+# the standard interval for transmitting routing messages
+# if nothing is configured. The interval can be overwritten
+# globally at common.mcast_tx_interval or for each interface
+# (e.g. some interfaces can handle more routing overhead, some
+# link layer are overloaded with some bytes/second)
+MCAST_TX_INTERVAL = 30
+
 # don't recognize own mcast transmissions
 # by default, can be changed for debugging
 MCAST_LOOP = 0
@@ -62,9 +69,9 @@ async def http_ipc_handle(request):
     msg.data = request_data
     debugpp(request_data)
     try:
-        queue_rt_proto.put_nowait(msg)
         fmt = "received route protcol message from {}:{}\n"
         debug(fmt.format( addr[0], addr[1]))
+        queue_rt_proto.put_nowait(msg)
     except asyncio.queues.QueueFull:
         warn("queue overflow, strange things happens")
 
@@ -89,18 +96,25 @@ def http_ipc_init(db, loop, queue_rt_proto):
 
 def rx_mcast_socket_init(conf):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
     if hasattr(sock, "SO_REUSEPORT"):
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
     sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, MCAST_LOOP)
+
     sock.bind(('', int(conf.common.v4_listen_port)))
+
     host = socket.inet_aton(socket.gethostbyname(socket.gethostname()))
     sock.setsockopt(socket.SOL_IP, socket.IP_MULTICAST_IF, host)
+
     mcast_addr = socket.inet_aton(conf.common.v4_mcast_addr)
     mreq = struct.pack("4sl", mcast_addr, socket.INADDR_ANY)
     sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+
     fmt = "Routing protocol mcast socket listen on {}:{}\n"
     msg(fmt.format(conf.common.v4_mcast_addr, conf.common.v4_listen_port))
+
     return sock
 
 
@@ -163,6 +177,35 @@ async def rtn_msg_handler(conf, db, queue_rt_proto):
         rtn_rx_msg_multiplex(entry)
 
 
+async def rtn_tx_block_for_work(conf, interface):
+    timeout = 10
+    if conf.common.mcast_tx_interval:
+        timeout = conf.common.mcast_tx_interval
+    if interface.mcast_tx_interval:
+        timeout = interface.mcast_tx_interval
+    debug("Mcast TX interval: {} seconds\n".format(timeout))
+    try:
+        await asyncio.wait_for(interface.queue_tx_ctrl.get(), timeout=timeout)
+    except:
+        pass
+
+
+async def rtn_tx_loop(conf, db, interface):
+    while True:
+        await rtn_tx_block_for_work(conf, interface)
+        debug("send routing message via interface: {}\n".format(interface.local_v4_out_addr))
+
+
+def rtn_tx_tasks_init(conf, db):
+    # we spawn a tx coroutine for every configured interface
+    for interface in conf.interfaces:
+        debug("Create coroutine for {}\n".format(interface.local_v4_out_addr))
+        # create a new IPC queue to trigger a transmission
+        # from outside the coroutine
+        interface.queue_tx_ctrl = asyncio.Queue(ASYNC_IO_QUEUE_LENGTH)
+        asyncio.ensure_future(rtn_tx_loop(conf, db, interface))
+
+
 def db_init():
     db = addict.Dict()
     db.interfaces = []
@@ -177,6 +220,7 @@ def main(conf):
     http_ipc_init(db, loop, queue_rt_proto)
     init_rx_tx_sockets(conf, db, loop, queue_rt_proto)
     asyncio.ensure_future(rtn_msg_handler(conf, db, queue_rt_proto))
+    rtn_tx_tasks_init(conf, db)
 
     try:
         loop.run_forever()
@@ -202,8 +246,12 @@ def load_configuration_file(args):
 
 
 def init_global_behavior(args, conf):
-    if conf.common.debug == "verbose" or args.verbose:
+    global DEBUG_ON
+    if conf.common.debug or args.verbose:
+        msg("Debug: enabled\n")
         DEBUG_ON = True
+    else:
+        msg("Debug: disabled\n")
 
 
 def conf_init():
@@ -214,5 +262,6 @@ def conf_init():
 
 
 if __name__ == '__main__':
+    msg("mdvrd - Multiline Distance Vector Routing Daemon, 2016\n")
     conf = conf_init()
     main(conf)
