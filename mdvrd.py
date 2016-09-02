@@ -14,6 +14,8 @@ import pprint
 import socket
 import struct
 import functools
+import uuid
+import zlib
 
 # default false, can be changed via program arguments (-v)
 DEBUG_ON = False
@@ -27,7 +29,16 @@ MCAST_TX_INTERVAL = 30
 
 # don't recognize own mcast transmissions
 # by default, can be changed for debugging
-MCAST_LOOP = 0
+MCAST_LOOP = 1
+
+# ident to drop all non-mdvrd applications.
+IDENT = "MDVRD".encode('ascii')
+
+# identify this sender
+SECRET_COOKIE = str(uuid.uuid4())
+
+# data compression level
+ZIP_COMPRESSION_LEVEL = 9
 
 ASYNC_IO_QUEUE_LENGTH = 32
 
@@ -103,7 +114,7 @@ def rx_mcast_socket_init(conf):
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
     sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, MCAST_LOOP)
 
-    sock.bind(('', int(conf.common.v4_listen_port)))
+    sock.bind(('', int(conf.common.v4_mcast_port)))
 
     host = socket.inet_aton(socket.gethostbyname(socket.gethostname()))
     sock.setsockopt(socket.SOL_IP, socket.IP_MULTICAST_IF, host)
@@ -113,7 +124,7 @@ def rx_mcast_socket_init(conf):
     sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
 
     fmt = "Routing protocol mcast socket listen on {}:{}\n"
-    msg(fmt.format(conf.common.v4_mcast_addr, conf.common.v4_listen_port))
+    msg(fmt.format(conf.common.v4_mcast_addr, conf.common.v4_mcast_port))
 
     return sock
 
@@ -162,10 +173,45 @@ def init_rx_tx_sockets(conf, db, loop, queue_rt_proto):
         db.interfaces.append(interface)
 
 
-def rtn_rx_msg_multiplex(data):
-    if data.type == TYPE_RTN_INTRA_IPC:
+def rtn_rx_parse_payload_header(raw):
+    if len(raw) < len(IDENT) + 4:
+        # check for minimal length
+        # ident(3) + size(>=4) + payload(>=1)
+        warn("Header to short: {} byte".format(len(raw)))
+        return False
+    ident = raw[0:len(IDENT)]
+    if ident != IDENT:
+        print("ident wrong: expect:{} received:{}".format(IDENT, ident))
+        return False
+    return True
+
+
+def rtn_rx_parse_payload_data(raw):
+    size = struct.unpack('>I', raw[len(IDENT):len(IDENT) + 4])[0]
+    if len(raw) < 7 + size:
+        print("message seems corrupt")
+        return False, None
+    data = raw[len(IDENT) + 4:len(IDENT) + 4 + size]
+    uncompressed_json = str(zlib.decompress(data), "utf-8")
+    data = json.loads(uncompressed_json)
+    return True, data
+
+
+def rtn_rx_msg_handler(conf, db, queue_msg):
+    ok = rtn_rx_parse_payload_header(queue_msg.data.data)
+    if not ok: return
+
+    ok, data = rtn_rx_parse_payload_data(queue_msg.data.data)
+    if not ok: return
+
+    print("OK: {}".format(data))
+
+
+def rtn_rx_msg_multiplex(conf, db, queue_msg):
+    if queue_msg.type == TYPE_RTN_INTRA_IPC:
+        rtn_rx_msg_handler(conf, db, queue_msg)
         pass
-    elif data.type == TYPE_RTN_INTER_IPC:
+    elif queue_msg.type == TYPE_RTN_INTER_IPC:
         pass
     else:
         raise Exception("Internal error")
@@ -173,27 +219,58 @@ def rtn_rx_msg_multiplex(data):
 
 async def rtn_msg_handler(conf, db, queue_rt_proto):
     while True:
-        entry = await queue_rt_proto.get()
-        rtn_rx_msg_multiplex(entry)
+        queue_msg = await queue_rt_proto.get()
+        rtn_rx_msg_multiplex(conf, db, queue_msg)
 
 
-async def rtn_tx_block_for_work(conf, interface):
-    timeout = 10
-    if conf.common.mcast_tx_interval:
-        timeout = conf.common.mcast_tx_interval
-    if interface.mcast_tx_interval:
-        timeout = interface.mcast_tx_interval
-    debug("Mcast TX interval: {} seconds\n".format(timeout))
+async def rtn_tx_block_for_work(conf, interface, timeout):
     try:
         await asyncio.wait_for(interface.queue_tx_ctrl.get(), timeout=timeout)
     except:
         pass
 
 
+def rtn_tx_packet_create_body(conf):
+    data = {}
+    data["cookie"] = SECRET_COOKIE
+    #create_payload_routing(conf, data)
+    json_data = json.dumps(data)
+    byte_stream = str.encode(json_data)
+    compressed = zlib.compress(byte_stream, ZIP_COMPRESSION_LEVEL)
+    return compressed
+
+
+def rtn_tx_packet_create_header(data_len):
+    head = struct.pack('>I', data_len)
+    return IDENT + head
+
+
+def rtn_tx_packet_create(conf, db, interface):
+    payload = rtn_tx_packet_create_body(conf)
+    header = rtn_tx_packet_create_header(len(payload))
+    return header + payload
+
+
+def rtn_tx_send(conf, db, interface):
+    addr = conf.common.v4_mcast_addr
+    port = int(conf.common.v4_mcast_port)
+    packet = rtn_tx_packet_create(conf, db, interface)
+
+    fd = interface.local_v4_out_fd
+    ret = fd.sendto(packet, (addr, port))
+    debug("transmitted routing packet: {} bytes transmitted\n".format(ret))
+
+
 async def rtn_tx_loop(conf, db, interface):
+    timeout = 10
+    if conf.common.mcast_tx_interval:
+        timeout = conf.common.mcast_tx_interval
+    if interface.mcast_tx_interval:
+        timeout = interface.mcast_tx_interval
     while True:
-        await rtn_tx_block_for_work(conf, interface)
+        await rtn_tx_block_for_work(conf, interface, timeout)
         debug("send routing message via interface: {}\n".format(interface.local_v4_out_addr))
+        rtn_tx_send(conf, db, interface)
 
 
 def rtn_tx_tasks_init(conf, db):
