@@ -48,10 +48,15 @@ TYPE_RTN_INTER_IPC = 1
 # INTRA: mcast routing between mdvrd instances
 TYPE_RTN_INTRA_IPC = 2
 
+# exit codes for shell, failre cones can be sub-devided
+# if required and shell/user has benefit of this information
+EXIT_OK      = 0
+EXIT_FAILURE = 1
+
 
 def err(msg):
     sys.stderr.write(msg)
-    sys.exit(1)
+    sys.exit(EXIT_FAILURE)
 
 def warn(msg):
     sys.stderr.write(msg)
