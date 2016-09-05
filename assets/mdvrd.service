@@ -1,0 +1,9 @@
+[Unit]
+Description=Multiline Distance Vector Routing Daemon Service
+
+[Service]
+Type=forking
+ExecStart=/usr/bin/python3 /usr/bin/mdvrd
+
+[Install]
+WantedBy=multi-user.target
