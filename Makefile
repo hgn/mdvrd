@@ -1,4 +1,7 @@
 
+install_deps:
+	sudo -H pip3 install -r requirements.txt
+
 install:
 	install -m 755 -T mdvrd.py /usr/bin/mdvrd
 	install -m 644 assets/mdvrd.service /lib/systemd/system/
