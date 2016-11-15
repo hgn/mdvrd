@@ -2,7 +2,7 @@
 Description=Multiline Distance Vector Routing Daemon Service
 
 [Service]
-Type=forking
+Type=simple
 ExecStart=/usr/bin/python3 /usr/bin/mdvrd -f /etc/mdvrd/mdvrd.json
 
 [Install]
